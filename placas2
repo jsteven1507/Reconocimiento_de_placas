@@ -1,0 +1,225 @@
+import numpy as np #librería en la que se define un tipo de dato que representa matrices multidimensionales
+# además incluye algunas funcionalidades básicas para trabajar con ellas
+import cv2 #OpenCV es una biblioteca libre de visión artificial originalmente desarrollada por Intel
+import os
+import pytesseract # Detector de texto (OCR)
+
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract'
+placa = []
+path = "C:/Users/Steven/Documents/8 semestre/Procesamiento de imagenes/"  #carpeta del archivo
+image_name = 'placa23.jpeg'  #  nombre de archivo
+
+path_file = os.path.join(path, image_name)
+image = cv2.imread(path_file)   #Se carga el archivo
+
+
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) # se convierte a escala de grises
+
+image_hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV) #se convierte a espacio HSV
+
+#Valores para mascara de color
+lim_inf = (14, 113, 34)
+lim_sup = (25, 255, 255)
+
+maskk = cv2.inRange(image_hsv, lim_inf, lim_sup) # se aplica la mascara de color
+
+
+#Se hace open close para eliminar huecos
+kernel = np.ones((5, 5), np.uint8)
+bolas = cv2.morphologyEx(maskk, cv2.MORPH_CLOSE, kernel)
+bolas = cv2.morphologyEx(bolas, cv2.MORPH_OPEN, kernel)
+
+#Se encuentran bordes
+canny = cv2.Canny(bolas, 6, 200)
+
+cannyy = cv2.dilate(canny, None, iterations=5) #Se cierra dilatando los bordes
+
+#Se encuentra los contornos
+cnts, _ = cv2.findContours(canny, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+max = 0
+pos_max = 0
+approx_max = 0
+# cv2.drawContours(image,cnts,-1,(0,255,0),2)
+for c in cnts: # se recorren los contornos
+    area = cv2.contourArea(c) # se encuentra el area del contorno
+    x, y, w, h = cv2.boundingRect(c) # se aproxima el contorno a un rectangulo
+    # se aproxima el contorno a un poligono
+    epsilon = 0.09 * cv2.arcLength(c, True)
+    approx = cv2.approxPolyDP(c, epsilon, True)
+    aspect_ratio = float(w) / h  #se encuentra la relacion ancho sobre alto
+
+    # se discrimina el contorno por puntos de poligono, relacion del rectangulo y area
+    if (len(approx) == 3 or len(approx) == 4) and aspect_ratio > 1.2 and aspect_ratio < 2.9 and area < 6000:
+        if cv2.contourArea(c) > max: # se encuentra el contorno con mayor area
+            max = cv2.contourArea(c)
+            pos_min = c
+            approx_max = approx
+            xm, ym, wm, hm = x, y, w, h
+            rect = cv2.minAreaRect(c) # se encuentra el rectangulo con menor area que encierre el contorno
+
+box = cv2.boxPoints(rect) # se encuentran los puntos que respresntan el rectangulo de menor area
+box = np.int0(box)# se convierten a entero los puntos box
+# print(box)
+# im = cv2.drawContours(image,[box],0,(0,0,255),5) # visualiza el rectangulo en la imagen
+centro, medidas, angulo = rect # se obtienen las propiedades del rectangulo
+w, h = medidas  # se obtiene ancho y altura
+
+#Se encuentra los extremos del rectangulo dependiendo de la orientacion
+if h > w:
+    p1 = box[2]
+    pts1 = np.array([box[2], box[3], box[1], box[0]], np.int32)
+    y = int(h)
+    x = int(w)
+
+else:
+    p1 = box[1]
+    pts1 = np.array([box[1], box[2], box[0], box[3]], np.int32)
+    y = int(w)
+    x = int(h)
+
+
+p10 = p1[0]
+p11 = p1[1]
+
+#se encuentran los puntos que tendria el rectangulo sin inclinacion
+pts2 = np.array([p1, [p1[0] + y, p1[1]], [p1[0], p1[1] + x], [p1[0] + y, p1[1] + x]], np.int32)
+
+#se realiza homografia con los pts1 y pts2
+H, _ = cv2.findHomography(pts1, pts2, method=cv2.RANSAC)
+image_w = cv2.warpPerspective(image, H, (image.shape[1], image.shape[0]))
+
+#Se extrae la zona de la placa
+pl = image_w[p11:p11 + x, p10:p10 + y]
+#Se extrae la zona de la placa con pixeles mas anchos que la seleccionada
+placaa = image_w[p11 - 5:p11 + x, p10 - 8:p10 + y + 2]
+
+# se normaliza el tamaño de la placa a 100x200
+dim = (200, 100)
+plac1 = cv2.resize(placaa, dim, interpolation=cv2.INTER_AREA)
+plac2 = cv2.resize(pl, dim, interpolation=cv2.INTER_AREA)
+
+# Se extrae la region de la placa donde aparece la ciudad del auto
+hn = 85
+placa1 = plac1[0:hn, 0:199]
+placa2 = plac2[0:hn, 0:199]
+
+# se convierte a grises las dos placas
+gray1 = cv2.cvtColor(placa1, cv2.COLOR_BGR2GRAY)
+gray2 = cv2.cvtColor(placa2, cv2.COLOR_BGR2GRAY)
+
+#Se realza el contraste
+clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+gray1 = clahe.apply(gray1)
+gray2 = clahe.apply(gray2)
+
+#Se ingresa gray1 al detector de texto
+text = pytesseract.image_to_string(gray1, config='--psm 11')
+
+#print('PLACA grises:', text)
+
+###seleccion de caracteres validos
+texto = []
+a = 0
+for i in text: # se recorre el string de salida del OCR
+    # print(ord(i))
+    asc = ord(i) # se convierte a ascii
+    if (asc >= 65 and asc <= 90) or (asc >= 48 and asc <= 57): # selecciona los caracteres de A-Z Y 0-9
+        texto.append(a) # Se agrega el valor que cumple
+        texto[a] = i
+
+        #Se realizan ajustes de error
+        if (asc == 65 and a > 2):#A->8
+            texto[a] = '8'
+        if (asc == 83 and a > 2):#S->5
+            texto[a] = '5'
+        if (asc == 76 and a > 2):#L->1
+            texto[a] = '1'
+        if (asc == 48 and a <= 2):#0 ->O
+            texto[a] = 'O'
+        a = a + 1
+
+
+
+if len(texto) != 6: # si el numero de caracteres no es 6
+
+    # Se aplica umbral Otsu a la regio de la zona mas pequeña(gray2)
+    ret, Ibw_otsu = cv2.threshold(gray2, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    threshold = ret - 20 # se resta 20 al valor de umbral para mejorar resultado
+    ret, Ibw_manual = cv2.threshold(gray1, threshold, 255, cv2.THRESH_BINARY)
+    # print(ret)
+    dst1 = Ibw_manual.copy() # se hace una copia de la imagen umbralizada
+
+    #se hace un proceso de open close dependiendo del valor de umbral para que no elimine los caracteres suaves
+    if ret > 60:
+        m = int(ret / 18)
+    else:
+        m = 1
+    kernel = np.ones((m, 2), np.uint8)
+    clos = cv2.morphologyEx(dst1, cv2.MORPH_CLOSE, kernel)
+    open = cv2.morphologyEx(clos, cv2.MORPH_OPEN, kernel)
+
+
+    #se inunda desde los extremos de la imagen con blanco
+    for a in range(199):
+        cv2.floodFill(open, None, (a, 0), 255)
+        # cv2.floodFill(open,None,(a,hn-1),255)
+    for a in range(hn - 1):
+        cv2.floodFill(open, None, (0, a), 255)
+        cv2.floodFill(open, None, (198, a), 255)
+
+    # Se eliminan posibles huecos
+    kernel = np.ones((2, 2), np.uint8)
+    bolas = cv2.morphologyEx(open, cv2.MORPH_CLOSE, kernel)
+    bolas = cv2.morphologyEx(bolas, cv2.MORPH_OPEN, kernel)
+
+    # cv2.polylines(image, [pts], True, (0, 255, 255), 1, cv2.LINE_AA)
+
+    #se ingresa finalmente la zona de la placa procesada al detector de texto
+    text = pytesseract.image_to_string(bolas, config='--psm 11')
+
+    #print('PLACA BN:', text)
+    texto = []
+    a = 0
+    for i in text: # se recorre el string
+        # print(ord(i))
+        asc = ord(i) # se convierte a ascii
+        if (asc >= 65 and asc <= 93) or (asc >= 48 and asc <= 57) or (asc == 40) or (asc == 41):# selecciona los caracteres de A-Z, 0-9, [,],(,)
+            texto.append(a) # se agrega los que si cumplen
+            texto[a] = i
+
+            if (asc >= 91 and asc <= 93): # [ ] \ -> I y 1 dependiendo del indice
+                if a <= 2:
+                    texto[a] = 'I'
+                else:
+                    texto[a] = '1'
+            if ((asc == 65 or asc == 66) and a > 2): #A, B->8 si esta en los tres ultimos caracteres
+                texto[a] = '8'
+            if ((asc == 41 or asc == 84) and a > 2): # ),T -> 7
+                texto[a] = '7'
+            if (asc == 83 and a > 2): # S-> 5
+                texto[a] = '5'
+            if (asc == 76 and a > 2): # l->1
+                texto[a] = '1'
+
+            if ((asc == 55 or asc == 50) and a <= 2): # 2, 7 -> Z
+                texto[a] = 'Z'
+            if (asc == 40 and a <= 2): # ( -> C
+                texto[a] = 'C'
+            if (asc == 48 and a <= 2): # 0 -> O
+                texto[a] = 'O'
+            a = a + 1
+te = texto
+te="".join(te) #Se une en un string los caracteres
+
+print(texto)
+
+#si es una placa valida imprime la referencia
+if (len(texto)==6):
+    print('placa:',te)
+
+#cv2.imshow('Imaig',im)
+cv2.imshow('Im',bolas )
+cv2.imshow('I', gray1)
+cv2.moveWindow('I', 45, 10)
+cv2.waitKey(0)
